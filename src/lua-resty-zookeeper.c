@@ -38,18 +38,30 @@ typedef struct {
 
 static zk_error zk_errtab[] = {
     {ZOK, "ok"},
-    {ZNONODE, "the parent node does not exist"},
     {ZNOAUTH, "the client does not have permission"},
+    {ZNONODE, "the parent node does not exist"},
+    {ZCLOSING, "zookeeper is closing"},
+    {ZNOTHING, "(not error) no server responses to process"},
+    {ZAPIERROR, "api error"},
     {ZNOTEMPTY, "children are present; node cannot be deleted"},
+    {ZAUTHFAILED, "client authentication specified"},
+    {ZBADVERSION, "version conflict"},
+    {ZINVALIDACL, "invalid ACL specified"},
     {ZNODEEXISTS, "the node already exists"},
     {ZSYSTEMERROR, "a system (OS) error occured; it's worth checking errno to get details"},
     {ZBADARGUMENTS, "invalid input parameters"},
     {ZINVALIDSTATE, "ZOO_SESSION_EXPIRED_STATE or ZOO_AUTH_FAILED_STATE"},
-    {ZCONNECTIONLOSS, "a network error occured while attempting to send request to server"},
+    {ZSESSIONMOVED, "session moved to another server, so operation is ignored"},
+    {ZUNIMPLEMENTED, "operation is unimplemented"},
+    {ZCONNECTIONLOSS, "connection to the server has been lost"},
+    {ZSESSIONEXPIRED, "the session has been expired by the server"},
+    {ZINVALIDCALLBACK, "invalid callback specified"},
     {ZMARSHALLINGERROR, "failed to marshall a request; possibly, out of memory"},
-    {ZOPERATIONTIMEOUT, "failed to flush the buffers within the specified timeout"},
+    {ZOPERATIONTIMEOUT, "operation timeout"},
+    {ZDATAINCONSISTENCY, "a data inconsistency was found"},
+    {ZRUNTIMEINCONSISTENCY, "a runtime inconsistency was found"},
     {ZNOCHILDRENFOREPHEMERALS, "cannot create children of ephemeral nodes"},
-    {0, NULL},
+    {-32768, NULL},
 };
 
 static const char *zk_get_error(int errcode)
@@ -68,11 +80,21 @@ static const char *zk_get_error(int errcode)
     return unknown;
 }
 
-#define ZK_RETURN(L, errcode) do { \
+#define ZK_RETURN_BOOL(L, errcode) do { \
     if (errcode == ZOK) { \
         lua_pushboolean(L, 1); \
     } else { \
         lua_pushboolean(L, 0); \
+    } \
+    lua_pushstring(L, zk_get_error(errcode)); \
+    return 2; \
+} while (0)
+
+#define ZK_RETURN_LSTR(L, str, len, errcode) do { \
+    if (errcode == ZOK) { \
+        lua_pushlstring(L, str, (size_t)len); \
+    } else { \
+        lua_pushnil(L); \
     } \
     lua_pushstring(L, zk_get_error(errcode)); \
     return 2; \
@@ -156,7 +178,7 @@ static int zk_close(lua_State *L)
     lua_pushnil(L);
     lua_settable(L, LUA_REGISTRYINDEX);
 
-    ZK_RETURN(L, rc);
+    ZK_RETURN_BOOL(L, rc);
 }
 
 static void empty_str_cb(int rc, const char *name, const void *data) {}
@@ -182,7 +204,7 @@ static int zk_acreate(lua_State *L)
     int rc = zoo_acreate(wrapper->zk, path, val, (int)len,
             &ZOO_OPEN_ACL_UNSAFE, 0, empty_str_cb, NULL);
 
-    ZK_RETURN(L, rc);
+    ZK_RETURN_BOOL(L, rc);
 }
 
 /* lua code:
@@ -210,7 +232,7 @@ static int zk_create(lua_State *L)
     int rc = zoo_create(wrapper->zk, path, val, (int)len,
             &ZOO_OPEN_ACL_UNSAFE, 0, NULL, 0);
 
-    ZK_RETURN(L, rc);
+    ZK_RETURN_BOOL(L, rc);
 }
 
 /* lua code:
@@ -224,7 +246,44 @@ static int zk_delete(lua_State *L)
     zhandle_t *zk = get_zhandle(L);
     const char *path = luaL_checkstring(L, 1);
     int rc = zoo_delete(zk, path, -1);
-    ZK_RETURN(L, rc);
+    ZK_RETURN_BOOL(L, rc);
+}
+
+/*
+local ok, err = zk.set("path", "data")
+if not ok then
+    print("zk.set error: ", err)
+end
+*/
+static int zk_set(lua_State *L)
+{
+    zhandle_t *zk = get_zhandle(L);
+    const char *path = luaL_checkstring(L, 1);
+    size_t data_len = 0;
+    const char *data = luaL_checklstring(L, 2, &data_len);
+    int rc = zoo_set(zk, path, data, data_len, -1);
+    ZK_RETURN_BOOL(L, rc);
+}
+
+/*
+local data, err = zk.get("path")
+if not data then
+    print("zk.get error: ", err)
+end
+*/
+static int zk_get(lua_State *L)
+{
+    zhandle_t *zk = get_zhandle(L);
+    const char *path = luaL_checkstring(L, 1);
+    char buf[1024];
+    int size = sizeof(buf);
+
+    int rc = zoo_get(zk, path, 0, buf, &size, NULL);
+    if (rc == ZOK) {
+        ZK_RETURN_LSTR(L, buf, size, rc);
+    } else {
+        ZK_RETURN_BOOL(L, rc);
+    }
 }
 
 static const luaL_Reg zk[] = {
@@ -233,6 +292,8 @@ static const luaL_Reg zk[] = {
     {"acreate", zk_acreate},
     {"create", zk_create},
     {"delete", zk_delete},
+    {"set", zk_set},
+    {"get", zk_get},
     {NULL, NULL},
 };
 
