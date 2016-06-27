@@ -286,6 +286,32 @@ static int zk_get(lua_State *L)
     }
 }
 
+/*
+local ok, err = zk.set_log_level(zk.ZOO_LOG_LEVEL_DEBUG)
+if not ok then
+    print("set log level error: ", err)
+end
+*/
+static int zk_set_log_level(lua_State *L)
+{
+    int level = luaL_checkinteger(L, 1);
+    switch (level) {
+        case ZOO_LOG_LEVEL_DEBUG:
+        case ZOO_LOG_LEVEL_INFO:
+        case ZOO_LOG_LEVEL_WARN:
+        case ZOO_LOG_LEVEL_ERROR:
+            break;
+        default:
+            lua_pushboolean(L, 0);
+            lua_pushliteral(L, "illegal log level");
+            return 2;
+    }
+    zoo_set_debug_level((ZooLogLevel)level);
+    lua_pushboolean(L, 1);
+    lua_pushnil(L);
+    return 2;
+}
+
 static const luaL_Reg zk[] = {
     {"init", zk_init},
     {"close", zk_close},
@@ -294,13 +320,58 @@ static const luaL_Reg zk[] = {
     {"delete", zk_delete},
     {"set", zk_set},
     {"get", zk_get},
+    {"set_log_level", zk_set_log_level},
     {NULL, NULL},
 };
 
 int luaopen_zk(lua_State *L)
 {
+    // stack: ["zk"]
+
+    // default setting
     zoo_set_debug_level(ZOO_LOG_LEVEL_ERROR);
+
     luaL_register(L, "zk", zk);
+    // stack: ["zk", table(zk)]
+
+    lua_newtable(L);
+    // stack: ["zk", table(zk), {}]
+
+    lua_pushliteral(L, "__index");
+    // stack: ["zk", table(zk), {}, "__index"]
+
+    lua_newtable(L);
+    // stack: ["zk", table(zk), {}, "__index", {}]
+
+#define SET_T(l, k) do { \
+    lua_pushliteral(l, #k); \
+    lua_pushinteger(l, k); \
+    lua_settable(l, -3); \
+} while (0)
+
+    SET_T(L, ZOO_LOG_LEVEL_DEBUG);
+    SET_T(L, ZOO_LOG_LEVEL_INFO);
+    SET_T(L, ZOO_LOG_LEVEL_WARN);
+    SET_T(L, ZOO_LOG_LEVEL_ERROR);
+
+#undef SET_T
+    /* 
+    stack: ["zk", table(zk), {}, "__index", {
+        "ZOO_LOG_LEVEL_DEBUG", ZOO_LOG_LEVEL_DEBUG,
+        ...
+    }]
+    */
+
+    lua_settable(L, -3);
+    /* 
+    stack: ["zk", table(zk), {"__index" = {
+        "ZOO_LOG_LEVEL_DEBUG" = ZOO_LOG_LEVEL_DEBUG,
+        ...
+    }}]
+    */
+
+    lua_setmetatable(L, -2);
+    // stack: ["zk", table(zk)]
 
     return 1;
 }
