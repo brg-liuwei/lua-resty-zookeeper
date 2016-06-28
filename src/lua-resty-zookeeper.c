@@ -11,13 +11,19 @@
 #include <string.h>
 #include <sys/types.h>
 #include <errno.h>
+#include <pthread.h>
+
+#define ZK_WRAPPER "zk_wrapper"
+#define ZK_WATCHER "zk_watcher"
+#define ZK_WTABLE "zk_wtable"
 
 typedef struct {
     zhandle_t *zk;
+    pthread_mutex_t mut;
 } zk_wrapper;
 
-static zhandle_t *get_zhandle(lua_State *L) {
-    lua_pushliteral(L, "zk_wrapper");
+static zk_wrapper *get_zk_wrapper(lua_State *L) {
+    lua_pushliteral(L, ZK_WRAPPER);
     lua_gettable(L, LUA_REGISTRYINDEX);
     zk_wrapper *wrapper = lua_touserdata(L, -1);
 
@@ -25,10 +31,10 @@ static zhandle_t *get_zhandle(lua_State *L) {
         lua_pushliteral(L, "cannot get zookeeper wrapper, maybe having not init?");
         lua_error(L);
     } else if (wrapper->zk == NULL) {
-        lua_pushliteral(L, "cannot get zhandle, maybe having not init?");
+        lua_pushliteral(L, "zhandle(NULL) maybe having not init?");
         lua_error(L);
     }
-    return wrapper->zk;
+    return wrapper;
 }
 
 typedef struct {
@@ -100,56 +106,105 @@ static const char *zk_get_error(int errcode)
     return 2; \
 } while (0)
 
+static void zk_empty_watcher(zhandle_t *h, int type, int state,
+        const char *path, void *ctx)
+{
+    lua_State *L = (lua_State *)ctx;
+    zk_wrapper *wrapper = get_zk_wrapper(L);
+    pthread_mutex_unlock(&(wrapper->mut));
+}
+
 static void zk_watcher(zhandle_t *h, int type, int state,
         const char *path, void *ctx)
 {
     lua_State *L = (lua_State *)ctx;
+    zk_wrapper *wrapper = get_zk_wrapper(L);
 
-    // push watcher func
-    lua_pushliteral(L, "zk_watcher");
-    lua_gettable(L, LUA_REGISTRYINDEX);
-
-    lua_pushliteral(L, "zk_wrapper");
+    lua_pushliteral(L, ZK_WATCHER);
     lua_gettable(L, LUA_REGISTRYINDEX);
 
     lua_pushinteger(L, type);
     lua_pushinteger(L, state);
     lua_pushstring(L, path);
 
-    lua_call(L, 4, 0);
+    int args = 3;
+
+    lua_pushliteral(L, ZK_WTABLE);
+    lua_gettable(L, LUA_REGISTRYINDEX);
+
+    int wtab_index = lua_gettop(L);
+
+    // loop through the param table
+    lua_pushnil(L);
+    while (lua_next(L, wtab_index) != 0) {
+        lua_pushvalue(L, -2); // push key into top of stack for next loop
+        lua_remove(L, -3); // remove key, remain value
+        ++args;
+
+        lua_checkstack(L, 4); // to protect overflow
+    }
+
+    lua_remove(L, wtab_index);
+    lua_call(L, args, 0);
+
+    pthread_mutex_unlock(&(wrapper->mut));
 }
 
 /* lua code:
 local ok, errno = zk.init("127.0.0.1:2181")
+
+* or
+
+local ok, errno = zk.init("127.0.0.1:2181", 
+    function(type, state, path, ...) end, ...)
 if not ok then
     print("errno: ", errno)
 end
 */
 static int zk_init(lua_State *L)
 {
-    void *cb = NULL;
+    void *cb = zk_empty_watcher;
     size_t len = 0;
     const char *hosts = luaL_checklstring(L, 1, &len);
 
     int top = lua_gettop(L);
 
-    if (top > 1) {
+    if (top >= 2) {
         // save watcher
         luaL_checktype(L, 2, LUA_TFUNCTION);
-        lua_pushliteral(L, "zk_watcher");
+        lua_pushliteral(L, ZK_WATCHER);
         lua_pushvalue(L, 2);
         lua_settable(L, LUA_REGISTRYINDEX);
         cb = zk_watcher;
+
+        if (top >= 3) {
+            lua_pushliteral(L, ZK_WTABLE);
+            lua_newtable(L);
+            for (int t = 3; t <= top; ++t) {
+                lua_pushinteger(L, t - 2);
+                lua_pushvalue(L, t);
+                lua_settable(L, -3);
+            }
+            lua_settable(L, LUA_REGISTRYINDEX);
+
+            // luaL_checktype(L, 3, LUA_TTABLE);
+            // lua_pushliteral(L, ZK_WTABLE);
+            // lua_pushvalue(L, 3);
+            // lua_settable(L, LUA_REGISTRYINDEX);
+        }
     }
 
     // save zookeeper handler
+    lua_pushliteral(L, ZK_WRAPPER);
     zk_wrapper *wrapper = (zk_wrapper *)lua_newuserdata(L,
             sizeof(zk_wrapper));
-    lua_pushliteral(L, "zk_wrapper");
-    lua_pushlightuserdata(L, (void *)wrapper);
     lua_settable(L, LUA_REGISTRYINDEX);
 
     wrapper->zk = zookeeper_init(hosts, cb, 1000, NULL, (void *)L, 0);
+    if (pthread_mutex_init(&(wrapper->mut), NULL)) {
+        lua_pushstring(L, strerror(errno));
+        lua_error(L);
+    }
 
     if (wrapper->zk == NULL) {
         lua_pushboolean(L, 0);
@@ -164,17 +219,17 @@ static int zk_init(lua_State *L)
 
 static int zk_close(lua_State *L)
 {
-    lua_pushliteral(L, "zk_wrapper");
+    lua_pushliteral(L, ZK_WRAPPER);
     lua_gettable(L, LUA_REGISTRYINDEX);
-
     zk_wrapper *wrapper = lua_touserdata(L, -1);
 
     int rc = 0;
     if (wrapper != NULL) {
         rc = zookeeper_close(wrapper->zk);
+        pthread_mutex_destroy(&(wrapper->mut));
     }
 
-    lua_pushliteral(L, "zk_wrapper");
+    lua_pushliteral(L, ZK_WRAPPER);
     lua_pushnil(L);
     lua_settable(L, LUA_REGISTRYINDEX);
 
@@ -184,15 +239,15 @@ static int zk_close(lua_State *L)
 static void empty_str_cb(int rc, const char *name, const void *data) {}
 
 /*
+
+WARNING: no stable
+
 lua code:
 local ok, err = zk_acreate("/test", "some value")
  */
 static int zk_acreate(lua_State *L)
 {
-    // get zhandle_t
-    lua_pushliteral(L, "zk_wrapper");
-    lua_gettable(L, LUA_REGISTRYINDEX);
-    zk_wrapper *wrapper = lua_touserdata(L, -1);
+    zk_wrapper *wrapper = get_zk_wrapper(L);
 
     // get path
     const char *path = luaL_checkstring(L, 1);
@@ -217,10 +272,7 @@ end
  */
 static int zk_create(lua_State *L)
 {
-    // get zhandle_t
-    lua_pushliteral(L, "zk_wrapper");
-    lua_gettable(L, LUA_REGISTRYINDEX);
-    zk_wrapper *wrapper = lua_touserdata(L, -1);
+    zk_wrapper *wrapper = get_zk_wrapper(L);
 
     // get path
     const char *path = luaL_checkstring(L, 1);
@@ -229,8 +281,12 @@ static int zk_create(lua_State *L)
     size_t len;
     const char *val = luaL_checklstring(L, 2, &len);
     
+    printf("pre zoo_create\n");
     int rc = zoo_create(wrapper->zk, path, val, (int)len,
             &ZOO_OPEN_ACL_UNSAFE, 0, NULL, 0);
+    printf("post zoo_create\n");
+
+    pthread_mutex_lock(&(wrapper->mut));
 
     ZK_RETURN_BOOL(L, rc);
 }
@@ -243,9 +299,14 @@ end
 */
 static int zk_delete(lua_State *L)
 {
-    zhandle_t *zk = get_zhandle(L);
+    zk_wrapper *wrapper = get_zk_wrapper(L);
+
     const char *path = luaL_checkstring(L, 1);
-    int rc = zoo_delete(zk, path, -1);
+    int rc = zoo_delete(wrapper->zk, path, -1);
+
+    // wait for call back
+    pthread_mutex_lock(&(wrapper->mut));
+
     ZK_RETURN_BOOL(L, rc);
 }
 
@@ -257,11 +318,15 @@ end
 */
 static int zk_set(lua_State *L)
 {
-    zhandle_t *zk = get_zhandle(L);
+    zk_wrapper *wrapper = get_zk_wrapper(L);
+
     const char *path = luaL_checkstring(L, 1);
     size_t data_len = 0;
     const char *data = luaL_checklstring(L, 2, &data_len);
-    int rc = zoo_set(zk, path, data, data_len, -1);
+    int rc = zoo_set(wrapper->zk, path, data, data_len, -1);
+
+    pthread_mutex_lock(&(wrapper->mut));
+
     ZK_RETURN_BOOL(L, rc);
 }
 
@@ -273,12 +338,14 @@ end
 */
 static int zk_get(lua_State *L)
 {
-    zhandle_t *zk = get_zhandle(L);
+    zk_wrapper *wrapper = get_zk_wrapper(L);
+
     const char *path = luaL_checkstring(L, 1);
     char buf[1024];
     int size = sizeof(buf);
 
-    int rc = zoo_get(zk, path, 0, buf, &size, NULL);
+    int rc = zoo_get(wrapper->zk, path, 1, buf, &size, NULL);
+
     if (rc == ZOK) {
         ZK_RETURN_LSTR(L, buf, size, rc);
     } else {
@@ -312,6 +379,45 @@ static int zk_set_log_level(lua_State *L)
     return 2;
 }
 
+#define ZK_VAL_IF(name, s) \
+    if (name == s) { \
+        lua_pushliteral(L, #s); \
+        break; \
+    }
+
+#define FUNC_ZK_STR_BEGIN(name) \
+static int zk_##name##_str(lua_State *L) \
+{ \
+    int name = luaL_checkinteger(L, 1); \
+    do {
+
+#define FUNC_ZK_STR_END(name) \
+        break; \
+    } while (1); \
+    return 1; \
+}
+
+FUNC_ZK_STR_BEGIN(state)
+    ZK_VAL_IF(state, ZOO_EXPIRED_SESSION_STATE)
+    ZK_VAL_IF(state, ZOO_AUTH_FAILED_STATE)
+    ZK_VAL_IF(state, ZOO_CONNECTING_STATE)
+    ZK_VAL_IF(state, ZOO_ASSOCIATING_STATE)
+    ZK_VAL_IF(state, ZOO_CONNECTED_STATE)
+FUNC_ZK_STR_END(state)
+
+FUNC_ZK_STR_BEGIN(event)
+    ZK_VAL_IF(event, ZOO_CREATED_EVENT)
+    ZK_VAL_IF(event, ZOO_DELETED_EVENT)
+    ZK_VAL_IF(event, ZOO_CHANGED_EVENT)
+    ZK_VAL_IF(event, ZOO_CHILD_EVENT)
+    ZK_VAL_IF(event, ZOO_SESSION_EVENT)
+    ZK_VAL_IF(event, ZOO_NOTWATCHING_EVENT)
+FUNC_ZK_STR_END(event)
+
+#undef ZK_VAL_IF
+#undef FUNC_ZK_STR_BEGIN
+#undef FUNC_ZK_STR_END
+
 static const luaL_Reg zk[] = {
     {"init", zk_init},
     {"close", zk_close},
@@ -321,6 +427,8 @@ static const luaL_Reg zk[] = {
     {"set", zk_set},
     {"get", zk_get},
     {"set_log_level", zk_set_log_level},
+    {"state_str", zk_state_str},
+    {"event_str", zk_event_str},
     {NULL, NULL},
 };
 
@@ -353,6 +461,19 @@ int luaopen_zk(lua_State *L)
     SET_T(L, ZOO_LOG_LEVEL_INFO);
     SET_T(L, ZOO_LOG_LEVEL_WARN);
     SET_T(L, ZOO_LOG_LEVEL_ERROR);
+
+    SET_T(L, ZOO_CREATED_EVENT);
+    SET_T(L, ZOO_DELETED_EVENT);
+    SET_T(L, ZOO_CHANGED_EVENT);
+    SET_T(L, ZOO_CHILD_EVENT);
+    SET_T(L, ZOO_SESSION_EVENT);
+    SET_T(L, ZOO_NOTWATCHING_EVENT);
+
+    SET_T(L, ZOO_EXPIRED_SESSION_STATE);
+    SET_T(L, ZOO_AUTH_FAILED_STATE);
+    SET_T(L, ZOO_CONNECTING_STATE);
+    SET_T(L, ZOO_ASSOCIATING_STATE);
+    SET_T(L, ZOO_CONNECTED_STATE);
 
 #undef SET_T
     /* 
