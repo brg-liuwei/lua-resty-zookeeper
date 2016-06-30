@@ -17,7 +17,7 @@ local wtab = {
 ]]
 
 -- local ok, err = zk.init("127.0.0.1:2181")
---
+
 -- local ok, err = zk.init("127.0.0.1:2181", function(type_, state, path, ...)
 --     print(">>> watcher")
 --     print("    callback type_: ", zk.event_str(type_))

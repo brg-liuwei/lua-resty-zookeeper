@@ -186,11 +186,6 @@ static int zk_init(lua_State *L)
                 lua_settable(L, -3);
             }
             lua_settable(L, LUA_REGISTRYINDEX);
-
-            // luaL_checktype(L, 3, LUA_TTABLE);
-            // lua_pushliteral(L, ZK_WTABLE);
-            // lua_pushvalue(L, 3);
-            // lua_settable(L, LUA_REGISTRYINDEX);
         }
     }
 
@@ -281,10 +276,8 @@ static int zk_create(lua_State *L)
     size_t len;
     const char *val = luaL_checklstring(L, 2, &len);
     
-    printf("pre zoo_create\n");
     int rc = zoo_create(wrapper->zk, path, val, (int)len,
             &ZOO_OPEN_ACL_UNSAFE, 0, NULL, 0);
-    printf("post zoo_create\n");
 
     pthread_mutex_lock(&(wrapper->mut));
 
@@ -397,6 +390,7 @@ static int zk_##name##_str(lua_State *L) \
     return 1; \
 }
 
+// function: static int zk_state_str(lua_State *L)
 FUNC_ZK_STR_BEGIN(state)
     ZK_VAL_IF(state, ZOO_EXPIRED_SESSION_STATE)
     ZK_VAL_IF(state, ZOO_AUTH_FAILED_STATE)
@@ -405,6 +399,7 @@ FUNC_ZK_STR_BEGIN(state)
     ZK_VAL_IF(state, ZOO_CONNECTED_STATE)
 FUNC_ZK_STR_END(state)
 
+// function: static int zk_event_str(lua_State *L)
 FUNC_ZK_STR_BEGIN(event)
     ZK_VAL_IF(event, ZOO_CREATED_EVENT)
     ZK_VAL_IF(event, ZOO_DELETED_EVENT)
