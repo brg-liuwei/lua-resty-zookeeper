@@ -34,16 +34,17 @@ local wtab = {
 local a, b = "liu", "wei"
 local tab = {"lua", "clang", browser = "chrome", "golang", os = "OSX", "erlang", }
 local ok, err = zk.init("127.0.0.1:2181", function(type_, state, path, fir_name, sec_name, t)
-     print(">>> watcher")
-     print("    callback type_: ", zk.event_str(type_))
-     print("    callback state: ", zk.state_str(state))
-     print("    callback path: ", path)
-     print("    first_name: ", fir_name)
-     print("    second_name: ", sec_name)
-     print("    table t:")
-     for k, v in pairs(t) do
-         print("        ", k, " ==> ", v)
-     end
+     print(">>> watcher\n")
+     print("    callback type_: ", zk.event_str(type_), "\n")
+     -- print("    callback state: ", zk.state_str(state))
+     -- print("    callback path: ", path)
+     -- print("    first_name: ", fir_name)
+     -- print("    second_name: ", sec_name)
+     -- print("    table t:")
+     -- for k, v in pairs(t) do
+     --     print("        ", k, " ==> ", v)
+     -- end
+     print(" >>>>>>>> lua watcher end\n")
 end, a, b, tab)
 if not ok then
     print("init error: ", err)
@@ -87,7 +88,7 @@ tab[1] = "LUAJIT"
 table.insert(tab, "new-elem1")
 table.insert(tab, "new-elem2")
 
-print("before delete, change a, b, tab, NOTICE: tab can be changed BUT string (see value of a, b) cannot be changed")
+-- print("before delete, change a, b, tab, NOTICE: tab can be changed BUT string (see value of a, b) cannot be changed")
 
 local ok, err = zk.delete("/mytest")
 if not ok then
